@@ -1,0 +1,13 @@
+aoi_name: "Southern_Europe"
+crs_grid: "EPSG:3035"
+grid_cell_size_m: 250
+event_cluster: { spatial_m: 1000, temporal_h: 24 }
+labeling: { event_to_cell_buffer_m: 1000, negative_sample_ratio: 4 }
+firms_filter: { confidence: ["high"], daynight: ["N","D"], frp_min: 0.1 }
+temporal_windows: { feature_weeks_back: 3, predict_next_week: true }
+sentinel2_bands: ["B04","B08","B11","B12"]
+patch_km: 2.5
+stats: { agg: ["median","iqr"] }
+earthdata: { username_env: EARTHDATA_USER, password_env: EARTHDATA_PASS }
+
+#those will be changed and checked later

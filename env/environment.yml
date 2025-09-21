@@ -1,0 +1,27 @@
+name: wildfire-risk
+channels: [conda-forge]
+dependencies:
+  - python=3.11
+  - pandas
+  - numpy
+  - pyproj
+  - shapely
+  - geopandas
+  - rasterio
+  - rtree
+  - fiona
+  - gdal
+  - xgboost
+  - scikit-learn
+  - pyyaml
+  - requests
+  - matplotlib
+  - jupyterlab
+  - ipykernel
+  - pip
+  - pip:
+      - earthaccess
+      - pyogrio
+      - rio-cogeo
+      - mercantile
+      - py7zr
