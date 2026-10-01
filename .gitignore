@@ -2,15 +2,14 @@ __pycache__/
 .ipynb_checkpoints/
 *.pyc
 .env
-env/
 .venv/
 venv/
 data/raw/
 data/interim/
 data/features/
 data/labels/
-data/splits/
 data/models/
+# data/splits/ is intentionally tracked: split IDs are tiny and make experiments reproducible
 *.tif
 *.tiff
 *.jp2

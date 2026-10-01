@@ -4,24 +4,30 @@ dependencies:
   - python=3.11
   - pandas
   - numpy
+  - pyarrow            # Parquet I/O
   - pyproj
   - shapely
   - geopandas
   - rasterio
+  - rioxarray          # raster <-> xarray, COG writing
+  - xarray
+  - zarr
+  - dask
   - rtree
-  - fiona
-  - gdal
+  - pystac-client      # STAC search for Sentinel-2 COGs on AWS
   - xgboost
   - scikit-learn
   - pyyaml
   - requests
+  - tqdm
   - matplotlib
   - jupyterlab
   - ipykernel
   - pip
   - pip:
-      - earthaccess
-      - pyogrio
+      - earthaccess    # NASA Earthdata auth (MODIS LST)
       - rio-cogeo
-      - mercantile
-      - py7zr
+      - mlflow         # experiment tracking (D11)
+# PyTorch is installed separately with CUDA wheels (not via conda-forge):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#   pip install torchgeo

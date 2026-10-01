@@ -1,13 +1,76 @@
-aoi_name: "Southern_Europe"
-crs_grid: "EPSG:3035"
-grid_cell_size_m: 250
-event_cluster: { spatial_m: 1000, temporal_h: 24 }
-labeling: { event_to_cell_buffer_m: 1000, negative_sample_ratio: 4 }
-firms_filter: { confidence: ["high"], daynight: ["N","D"], frp_min: 0.1 }
-temporal_windows: { feature_weeks_back: 3, predict_next_week: true }
-sentinel2_bands: ["B04","B08","B11","B12"]
-patch_km: 2.5
-stats: { agg: ["median","iqr"] }
-earthdata: { username_env: EARTHDATA_USER, password_env: EARTHDATA_PASS }
+# Master config — single source of truth for geometry, windows, and thresholds.
+# Every value here traces to an entry in docs/decisions.txt (D-numbers).
 
-#those will be changed and checked later
+aoi_name: "California"                  # D02
+years: { start: 2017, end: 2024 }       # D02
+split:                                   # D02/D06/D10 — temporal holdout
+  train_years: [2017, 2018, 2019, 2020, 2021, 2022]
+  test_years: [2023, 2024]
+
+# CRS policy: analysis/clustering/grid in an equal-area CONUS CRS;
+# patches are read in the native Sentinel-2 UTM tile CRS (CA spans 10N/11N).
+crs_analysis: "EPSG:5070"               # NAD83 / Conus Albers (meters)
+
+patch:                                   # D13
+  size_px: 256
+  resolution_m: 20                       # => 5.12 km patches
+  # 10 m bands resampled down to 20 m; coarse layers stay native (side branch)
+
+temporal_windows:                        # D03 — four weekly windows before fire week
+  n_windows: 4
+  window_days: 7
+  offsets_days_before: [28, 21, 14, 7]   # window START, each spans 7 days toward day 0
+  predict_next_week: true
+
+firms_filter:                            # D08
+  sensor: "VIIRS_SNPP_SP"
+  confidence: ["high"]
+  type: [0]                              # presumed vegetation fire only
+  daynight: ["N", "D"]
+
+event_cluster:                           # D08 — spatio-temporal; TUNE in notebook 01
+  spatial_m: 1000
+  temporal_h: 48                         # gap larger than this splits events
+
+labeling:                                # D09
+  negative_sample_ratio: 3
+  negative_min_dist_km: 20               # spatial negatives: distance from any detection
+  negative_same_month: true
+  negative_same_ecoregion: true
+  temporal_negatives: true               # same burned locations, non-fire weeks
+
+sentinel2:                               # D07/D13
+  bands: ["B02", "B03", "B04", "B08", "B11", "B12"]
+  composite: "median"                    # per-window, SCL-masked
+  scl_valid_classes: [4, 5, 6]           # vegetation, not-vegetated, water
+  min_valid_px_frac: 0.6                 # below this a window counts as missing
+  max_missing_windows: 1                 # more than this drops the sample
+
+thermal:                                 # D04 — MODIS primary, ECOSTRESS stretch
+  source: "MOD11A1"                      # daily LST, 1 km
+  anomaly_baseline_years: [2003, 2022]   # climatology period for LST anomaly
+
+weather:                                 # D05 — gridMET, aggregated per window
+  source: "gridmet"
+  variables: ["tmmx", "rmin", "vs", "pr", "erc", "bi"]
+  # max temp, min rel. humidity, wind speed, precip, energy release, burning index
+
+static_layers:
+  dem: "Copernicus GLO-30"               # slope/aspect/elevation
+  landcover: "ESA WorldCover"
+
+normalization:                           # D06 — fit on train years ONLY, freeze
+  method: "zscore"
+  fit_on: "train_years"
+  stats_file: "data/features/norm_stats.json"
+
+extraction:                              # D12
+  max_concurrent_requests: 12
+  retries: 5
+  checkpoint_file: "data/interim/extraction_done.parquet"
+
+earthdata:
+  username_env: EARTHDATA_USER
+  password_env: EARTHDATA_PASS
+firms:
+  api_key_env: FIRMS_API_KEY
