@@ -1,0 +1,286 @@
+WILDFIRE PREDICTION THESIS — DESIGN DECISIONS LOG
+==================================================
+Purpose: running log of design decisions, their rationale, and where the
+related code lives. Source material for the thesis methodology chapter.
+Format per entry: headline / decision / why / code location / status.
+Status values: DECIDED (agreed, not built) | IMPLEMENTED | STRETCH (optional, time permitting)
+
+Repository: https://github.com/aycaayldrn/wildfire-risk
+Local root: C:\Users\aycay\Thesis_Wildfire_Prediction
+All "code location" paths are relative to the repo root. config/params.yml
+is the single source of truth for every numeric choice; its keys reference
+these D-numbers.
+
+Last updated: 2026-10-01
+
+
+D01 — PREDICTION TARGET: FIRE SUSCEPTIBILITY PER PATCH-WEEK
+-----------------------------------------------------------
+Decision: The model predicts fire susceptibility/risk for a spatial patch in
+a given week ("how fire-prone is this patch next week given its current
+state"), not the exact ignition event. Day 0 = fire week; inputs come from
+the four preceding weeks.
+Why: Individual ignitions are near-random point events (lightning strikes,
+human causes) that pre-fire satellite state cannot resolve. What vegetation,
+thermal, and weather features actually support is conditional susceptibility.
+This framing matches the comparable literature and allows honest evaluation
+(PR-AUC, risk maps) instead of chasing unpredictable point events.
+Future work (kept modular, not in scope): fire SPREAD prediction after
+ignition, possibly as a second model combined with this one. MTBS fire
+perimeters are collected from the start (see D08) so spread labels are
+available later without re-engineering.
+Code location (planned): src/labeling/, docs/methodology.md
+Status: DECIDED
+
+
+D02 — STUDY REGION AND YEARS: CALIFORNIA, 2017–2024
+---------------------------------------------------
+Decision: Area of interest is California; dataset years 2017–2024.
+Years 2017–2022 for training/validation, 2023–2024 held out as temporal
+test set.
+Why:
+- Fire frequency: California produces thousands of distinct fire events in
+  this period — enough positive samples to train a CNN, which needs
+  thousands of patches. A smaller or quieter region would starve the model.
+- Data coverage: VIIRS Standard Processing (labels) is mature from ~2012;
+  2017+ gives consistently high-quality detections. gridMET (weather) fully
+  covers California. Sentinel-2 L2A COGs on AWS cover the region with no
+  account needed.
+- Single-region simplicity: one ecoclimatic context keeps negative sampling
+  (same-ecoregion constraint) and the climatology computation tractable
+  within the January deadline. The pipeline is bbox-driven via
+  config/params.yml, so widening to OR/NV/AZ later is a config change, not
+  a code change.
+- The 2023–2024 temporal holdout directly tests forward-in-time
+  generalization — the claim "predict next week" requires exactly this.
+Code location (planned): config/params.yml (AOI bbox), data/splits/
+Status: DECIDED
+
+
+D03 — TEMPORAL INPUT DESIGN: FOUR WEEKLY WINDOWS
+------------------------------------------------
+Decision: Each sample carries four 7-day input windows ending 28, 21, 14,
+and 7 days before the fire week (D−28..D−22, D−21..D−15, D−14..D−8,
+D−7..D−1).
+Why: Captures the fuel dry-down trajectory, not just a snapshot. Also gives
+a free ablation experiment later (1 vs 2 vs 4 weeks of history). Weekly
+granularity matches Sentinel-2's ~5-day revisit: each window contains 1–2
+acquisitions, which the compositing step (D07) merges.
+Code location (planned): config/params.yml (window definitions),
+src/features/
+Status: DECIDED
+
+
+D04 — THERMAL SOURCE: MODIS LST PRIMARY, ECOSTRESS AS STRETCH
+-------------------------------------------------------------
+Decision: MODIS Land Surface Temperature (MOD11A1 daily / MOD11A2 8-day,
+1 km) is the thermal input for the main model. ECOSTRESS (70 m) is demoted
+to an optional stretch experiment ("does 70 m thermal improve over 1 km?").
+Why:
+- ECOSTRESS rides the ISS: irregular revisit and a DIFFERENT local
+  overpass time on each visit. LST swings 15–25 °C diurnally, so readings
+  are confounded by acquisition hour unless hour is explicitly modeled.
+- The LST-anomaly feature needs a per-location seasonal climatology. MODIS
+  offers 25 years of daily observations at fixed overpass times (Terra
+  ~10:30, Aqua ~13:30 local) — climatology is trivial and clean. ECOSTRESS's
+  shorter, irregular, hour-contaminated archive cannot support one honestly.
+- Coverage: MODIS virtually guarantees data in every weekly window;
+  ECOSTRESS leaves gaps that cost samples.
+- Resolution loss is acceptable: LST is spatially smooth over forest; a
+  5 km patch still gets a real 5x5 thermal field at 1 km. Fine spatial
+  texture comes from Sentinel-2; thermal supplies conditions context, which
+  is inherently coarse.
+Code location (planned): src/io/ (LST reader), src/features/thermal.py
+Status: DECIDED (MODIS) / STRETCH (ECOSTRESS)
+
+
+D05 — WEATHER DATA IN PHASE 1: GRIDMET
+--------------------------------------
+Decision: gridMET (daily, 4 km, CONUS) weather variables — temperature,
+humidity, wind, precipitation deficit, and pre-computed fire danger indices
+(ERC/BI) — are core phase-1 inputs, aggregated per weekly window.
+Why: Pre-fire vegetation indices describe fuel CONDITION; weather drives
+whether ignition and spread actually happen that week. Without weather the
+model mostly learns seasonal/geographic climatology. gridMET is free, needs
+no account, and exactly covers the AOI.
+Code location (planned): src/io/, src/features/
+Status: DECIDED
+
+
+D06 — CLIMATE NON-STATIONARITY HANDLING
+---------------------------------------
+Decision: Year-over-year climate drift is handled by three mechanisms:
+(1) anomaly features — values expressed relative to each location's
+multi-year norm for that week of year (e.g., "NDMI 1.5 sigma below normal"),
+comparable across years; (2) weather as an explicit input, so hotter years
+appear as more extreme input values rather than an unexplained shift in the
+fire/no-fire mapping; (3) a temporal holdout test (train 2017–2022, test
+2023–2024) that MEASURES forward drift instead of hiding it.
+Explicitly forbidden: per-year normalization (z-scoring each year by its own
+statistics) — it leaks future information and erases the very drift being
+studied. Normalization statistics (mu/sigma) are computed on the training
+years only, frozen, and reused unchanged on the test years.
+Why: "Every year the values are different" is real (non-stationarity); these
+are the standard defenses, and the temporal holdout turns the concern into a
+measurable, reportable thesis result.
+Code location (planned): src/features/ (anomaly computation),
+src/modeling/datasets.py (frozen normalization stats), data/splits/
+Status: DECIDED
+
+
+D07 — CLOUD/MULTI-PASS HANDLING: SCL-MASKED MEDIAN COMPOSITE PER WINDOW
+-----------------------------------------------------------------------
+Decision: For each weekly window, all available Sentinel-2 acquisitions are
+merged into one image: per-acquisition bad-pixel masking via the SCL layer
+(cloud, shadow, snow, no-data), then a per-pixel MEDIAN across valid
+observations. A minimum-valid-pixel threshold decides whether the window is
+usable; below it the window is marked missing (mask channel for the CNN;
+sample dropped if too many windows are missing).
+Why: Solves two problems at once — cloud contamination and the fact that a
+7-day window holds 1–2 overpasses that must be aligned into one frame.
+Median (not mean) because it is robust to outliers such as undetected cloud
+edges and smoke that slip past the SCL mask. Smoke contamination of pre-fire
+windows is a known residual risk (SCL does not flag smoke reliably) and is
+noted as a limitation.
+Code location (planned): src/features/veget.py, src/io/cogs_sentinel.py
+Status: DECIDED
+
+
+D08 — LABELS: FIRMS VIIRS SP + SPATIO-TEMPORAL CLUSTERING + MTBS PERIMETERS
+---------------------------------------------------------------------------
+Decision: Fire events come from FIRMS VIIRS Standard Processing detections,
+filtered to high confidence and type 0 (presumed vegetation fire), then
+clustered into discrete events in BOTH space and time (ST-DBSCAN or
+windowed DBSCAN) using a projected CRS or haversine metric — never raw
+degrees (eps in degrees is anisotropic: 0.005 deg of longitude shrinks with
+latitude). MTBS burned-area perimeters are downloaded alongside as a
+sanity check on clustering and as the future label source for spread
+prediction (D01 future work).
+Why: Spatial-only clustering merges separate nearby fires and fragments
+multi-day events. A VIIRS hotspot is a 375 m pixel detected possibly hours
+after ignition — event centroids are "detected fire origin", not literal
+ignition points, and are honest patch-level labels at our scale.
+Code location (planned): src/io/firms_api.py, src/geo/clustering.py
+Status: DECIDED
+
+
+D09 — NEGATIVE SAMPLING: SPATIAL + TEMPORAL NEGATIVES
+-----------------------------------------------------
+Decision: ~3 negatives per positive. Spatial negatives: same ecoregion and
+month, >=20 km from any FIRMS detection. ADDITIONALLY temporal negatives:
+the same locations that later burned, sampled in non-fire weeks.
+Why: With spatial negatives only, the model can cheat by memorizing
+fire-prone geography instead of learning conditions. Temporal negatives
+force it to distinguish "this place, dangerous week" from "this place, safe
+week" — which is the actual prediction task.
+Code location (planned): src/labeling/weekly_labels.py
+Status: DECIDED
+
+
+D10 — EVALUATION HARNESS (FROZEN BEFORE MODELING)
+-------------------------------------------------
+Decision: Spatial block cross-validation; temporal holdout (2023–2024);
+splits made per fire EVENT (all windows of one event stay on one side);
+metrics: PR-AUC, recall at fixed false-alarm rate, calibration curve.
+Accuracy is never reported as a headline metric. The harness is built and
+frozen in the baseline phase; every later model is judged by the identical
+harness and splits.
+Why: Spatial autocorrelation and event leakage are the two standard ways
+wildfire models silently overfit; class imbalance makes accuracy
+meaningless. Freezing the harness first makes the XGBoost-vs-CNN comparison
+legitimate.
+Code location (planned): src/modeling/metrics.py, src/modeling/datasets.py,
+data/splits/
+Status: DECIDED
+
+
+D11 — MODELING STRATEGY: TABULAR BASELINE FIRST, THEN CNN
+---------------------------------------------------------
+Decision: Two models in sequence. (1) XGBoost on per-patch aggregated
+features (medians/means of indices, LST anomaly, weather, topography) —
+the thesis baseline and safety floor. (2) CNN on full patches: small
+ResNet-18-scale encoder with pretrained geospatial weights (TorchGeo /
+SSL4EO Sentinel-2), four temporal windows stacked as channels, coarse
+inputs (LST, weather) via a small side branch, weighted BCE or focal loss.
+The headline thesis result is CNN vs XGBoost on identical splits (D10).
+Why: A CNN alone proves little; "CNN beats a strong tabular baseline by X
+on the same events" is a defensible contribution. Pretrained encoders
+matter at thesis-scale datasets (thousands, not millions, of samples). The
+tabular pipeline also dry-runs all data plumbing cheaply.
+Modularity: samples are a dict of tensors with optional keys
+(dynamic_satellite, static_topography, weather, anthropogenic=None, ...);
+the model checks for optional branches. Future factors (anthropogenic
+layers, spread model) plug in without restructuring.
+Code location (planned): src/modeling/train_xgb.py, src/modeling/ (CNN),
+src/modeling/datasets.py
+Status: DECIDED
+
+
+D12 — STORAGE AND EXTRACTION: MATERIALIZE PATCHES LOCALLY, TRAIN FROM DISK
+--------------------------------------------------------------------------
+Decision: Cloud COG archives are queried ONCE per sample during extraction
+(HTTP range requests reading only the ~5 km patch); results are written to
+local disk (per-sample multi-band COG + aggregated Parquet row). Training
+reads only from local disk, never from the network. Extraction scripts are
+parallelized (~8–16 concurrent requests), have retry logic, and are
+RESUMABLE (checkpoint of completed events) because the job runs for days.
+Why: COGs make fetching efficient, not free. Training re-reads every sample
+tens of times across dozens of runs; streaming from URLs would leave the
+GPU idle on network latency, hit rate limits, break on connection drops,
+and make results irreproducible if the archive reprocesses scenes. The
+bottleneck of the whole project is extraction I/O (order of 10^5 range
+requests), not CPU or GPU. Budget: 1–2 TB local SSD.
+Code location (planned): src/io/, notebooks/03_patch_extraction.ipynb
+Status: DECIDED
+
+
+D13 — PATCH GEOMETRY: 256x256 AT 20 M (5.12 KM)
+-----------------------------------------------
+Decision: Working resolution 20 m; Sentinel-2 10 m bands resampled down,
+coarse layers (LST 1 km, gridMET 4 km) kept at native resolution for the
+side branch (or bilinearly resampled where a single grid is required, with
+the false-precision caveat documented). Patch = 256x256 px = 5.12 km.
+Why: 20 m is the native resolution of the SWIR bands (B11/B12) that drive
+NDMI/NBR; resampling 10 m bands down loses little for this task. One pinned
+geometry in params.yml ends the 2 km / 2.5 km / 256 px ambiguity — every
+downstream artifact derives from it.
+Code location (planned): config/params.yml
+Status: DECIDED
+
+
+D14 — COMPUTE: LOCAL GPU, NO TPU/COLAB
+--------------------------------------
+Decision: Train locally (RTX 4060-class, 8 GB VRAM; i9-12900K) with mixed
+precision, batch 16–32. No Colab TPU. Fallback if ever needed: Kaggle
+notebooks (free ~30 h/week T4/P100).
+Why: The model (D11) fits comfortably in 8 GB. PyTorch-on-TPU (torch_xla)
+is high-friction, Colab free sessions disconnect mid-training, and syncing
+a local project with Colab adds workflow tax. The real bottleneck is
+extraction I/O (D12), which no cloud notebook fixes.
+Status: DECIDED
+
+
+D15 — DATA FORMATS
+------------------
+Decision: FIRMS events/labels: GeoParquet. Per-sample patches: multi-band
+COG (one file per sample, bands = windows x variables, coordinates
+preserved). Aggregated features: Parquet. Final training tensors: Zarr (or
+direct lazy reads from the per-sample COGs if I/O proves fast enough —
+decide empirically). Raw API dumps kept read-only under data/raw/.
+Why: Parquet for fast tabular I/O; COG keeps georeference so any
+false-positive patch can be dragged into QGIS and inspected; band-selective
+reads let experiments include/exclude layers with one line of code.
+Code location (planned): data/ layout per repo structure, src/io/
+Status: DECIDED
+
+
+PARKED / OUT OF SCOPE FOR THE THESIS
+------------------------------------
+- Forest Health Prediction Service (tabular health classifier, licensing,
+  desktop app): unrelated legacy notes; MAYBE a far-future feature.
+- Desktop application and user-facing service: after the model works.
+- Anthropogenic factors (roads, settlements, land use): future work; the
+  optional-key sample design (D11) keeps the injection point ready.
+- Fire spread prediction: future work; MTBS perimeters collected now (D08).
+- EU generalization test: stretch goal only.
+- ECOSTRESS 70 m thermal: stretch experiment only (D04).
