@@ -11,7 +11,11 @@ All "code location" paths are relative to the repo root. config/params.yml
 is the single source of truth for every numeric choice; its keys reference
 these D-numbers.
 
-Last updated: 2026-10-01
+Companion docs: docs/methodology.md (end-to-end method, self-contained),
+docs/data_dictionary.md (schemas, units, band orders), docs/todo.md
+(step-by-step completion plan with dates).
+
+Last updated: 2026-11-09
 
 
 D01 — PREDICTION TARGET: FIRE SUSCEPTIBILITY PER PATCH-WEEK
@@ -229,7 +233,14 @@ tens of times across dozens of runs; streaming from URLs would leave the
 GPU idle on network latency, hit rate limits, break on connection drops,
 and make results irreproducible if the archive reprocesses scenes. The
 bottleneck of the whole project is extraction I/O (order of 10^5 range
-requests), not CPU or GPU. Budget: 1–2 TB local SSD.
+requests), not CPU or GPU. Budget: 1 TB local SSD (approved 2026-10-01),
+TLC NAND required — QLC drives collapse on the sustained writes of
+extraction. With 1 TB, superseded raw caches are deleted rather than
+hoarded; the extraction checkpoint records what is safe to delete.
+Extraction architecture: shared-nothing workers (one sample end-to-end per
+worker, ThreadPoolExecutor ~12 threads — I/O-bound, GIL released on network
+waits), per-request retry with exponential backoff (tenacity), idempotent
+outputs via atomic write-then-rename, resumable from the checkpoint file.
 Code location (planned): src/io/, notebooks/03_patch_extraction.ipynb
 Status: DECIDED
 
